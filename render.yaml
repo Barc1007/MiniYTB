@@ -1,0 +1,318 @@
+# =============================================================================
+# Render Blueprint — MiniYTB
+# Dashboard Render > New > Blueprint > chọn repo này. Xem hướng dẫn: DEPLOY-RENDER.md
+#
+#  - 6 web service (gateway + 5 microservice) gói FREE, Docker, region Singapore
+#  - 1 background worker chuyển mã ffmpeg (Render KHÔNG có gói free cho worker)
+#  - 1 static site cho frontend (free)
+#  Dịch vụ ngoài: MongoDB Atlas, CloudAMQP (RabbitMQ), Cloudflare R2 (lưu video), Brevo (email)
+#
+#  Secret chỉ nhập MỘT lần (sync: false) ở 1 service "gốc"; service khác tham chiếu bằng
+#  fromService.envVarKey (Render không cho đặt secret trong environment group).
+#    myt-user  : MONGO_URL, RABBITMQ_URL, JWT_SECRET, INTERNAL_TOKEN, ADMIN_*, email, Google
+#    myt-video : S3_ENDPOINT, S3_BUCKET, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY
+#    myt-payment: VNPAY_*
+# =============================================================================
+
+envVarGroups:
+  - name: myt-common
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: STORAGE_DRIVER
+        value: s3
+      - key: S3_REGION
+        value: auto            # Cloudflare R2 dùng "auto"
+      - key: MONGO_POOL_SIZE
+        value: "5"             # Atlas free giới hạn 500 kết nối cho cả cluster
+
+services:
+  # ---------------------------------------------------------------------------
+  # API Gateway — địa chỉ public duy nhất mà frontend gọi tới
+  - type: web
+    name: myt-gateway
+    runtime: docker
+    plan: free
+    region: singapore
+    dockerfilePath: ./docker/service.Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    buildFilter:
+      paths: [services/gateway/**, packages/common/**, docker/**, package-lock.json]
+    envVars:
+      - fromGroup: myt-common
+      - key: SERVICE                  # build arg của Dockerfile
+        value: gateway
+      - key: TRUST_PROXY_HOPS
+        value: "1"
+      - key: HEALTH_TIMEOUT_MS
+        value: "8000"
+      - key: INTERNAL_TOKEN
+        fromService: { type: web, name: myt-user, envVarKey: INTERNAL_TOKEN }
+      - key: CORS_ORIGINS
+        fromService: { type: web, name: myt-web, envVarKey: RENDER_EXTERNAL_URL }
+      - key: USER_SERVICE_URL
+        fromService: { type: web, name: myt-user, envVarKey: RENDER_EXTERNAL_URL }
+      - key: VIDEO_SERVICE_URL
+        fromService: { type: web, name: myt-video, envVarKey: RENDER_EXTERNAL_URL }
+      - key: STREAMING_SERVICE_URL
+        fromService: { type: web, name: myt-streaming, envVarKey: RENDER_EXTERNAL_URL }
+      - key: COMMENT_SERVICE_URL
+        fromService: { type: web, name: myt-comment, envVarKey: RENDER_EXTERNAL_URL }
+      - key: PAYMENT_SERVICE_URL
+        fromService: { type: web, name: myt-payment, envVarKey: RENDER_EXTERNAL_URL }
+
+  # ---------------------------------------------------------------------------
+  # User Service — nơi khai báo các secret dùng chung
+  - type: web
+    name: myt-user
+    runtime: docker
+    plan: free
+    region: singapore
+    dockerfilePath: ./docker/service.Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    buildFilter:
+      paths: [services/user-service/**, packages/common/**, docker/**, package-lock.json]
+    envVars:
+      - fromGroup: myt-common
+      - key: SERVICE
+        value: user-service
+      - key: JWT_SECRET
+        generateValue: true
+      - key: INTERNAL_TOKEN
+        generateValue: true
+      - key: MONGO_URL                # mongodb+srv://... (MongoDB Atlas)
+        sync: false
+      - key: RABBITMQ_URL             # amqps://... (CloudAMQP)
+        sync: false
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: ADMIN_NAME
+        value: Quản trị viên
+      - key: BREVO_API_KEY            # để trống nếu chưa cần email (link reset sẽ in ra log)
+        sync: false
+      - key: MAIL_FROM                # vd: MiniYTB <email-da-xac-minh-tren-brevo@gmail.com>
+        sync: false
+      - key: GOOGLE_CLIENT_ID         # tuỳ chọn
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET     # tuỳ chọn
+        sync: false
+      - key: S3_ENDPOINT              # avatar được lưu trên R2
+        fromService: { type: web, name: myt-video, envVarKey: S3_ENDPOINT }
+      - key: S3_BUCKET
+        fromService: { type: web, name: myt-video, envVarKey: S3_BUCKET }
+      - key: S3_ACCESS_KEY_ID
+        fromService: { type: web, name: myt-video, envVarKey: S3_ACCESS_KEY_ID }
+      - key: S3_SECRET_ACCESS_KEY
+        fromService: { type: web, name: myt-video, envVarKey: S3_SECRET_ACCESS_KEY }
+      - key: FRONTEND_URL
+        fromService: { type: web, name: myt-web, envVarKey: RENDER_EXTERNAL_URL }
+      - key: GATEWAY_PUBLIC_URL
+        fromService: { type: web, name: myt-gateway, envVarKey: RENDER_EXTERNAL_URL }
+
+  # ---------------------------------------------------------------------------
+  # Video Service — nơi khai báo thông tin Cloudflare R2
+  - type: web
+    name: myt-video
+    runtime: docker
+    plan: free
+    region: singapore
+    dockerfilePath: ./docker/service.Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    buildFilter:
+      paths: [services/video-service/**, packages/common/**, docker/**, package-lock.json]
+    envVars:
+      - fromGroup: myt-common
+      - key: SERVICE
+        value: video-service
+      - key: S3_ENDPOINT              # https://<ACCOUNT_ID>.r2.cloudflarestorage.com
+        sync: false
+      - key: S3_BUCKET
+        sync: false
+      - key: S3_ACCESS_KEY_ID
+        sync: false
+      - key: S3_SECRET_ACCESS_KEY
+        sync: false
+      - key: AUTO_APPROVE_VIDEOS
+        value: "false"
+      - key: MAX_UPLOAD_MB_FREE
+        value: "200"
+      - key: MAX_UPLOAD_MB_PREMIUM
+        value: "1024"
+      - key: MONGO_URL
+        fromService: { type: web, name: myt-user, envVarKey: MONGO_URL }
+      - key: RABBITMQ_URL
+        fromService: { type: web, name: myt-user, envVarKey: RABBITMQ_URL }
+      - key: JWT_SECRET
+        fromService: { type: web, name: myt-user, envVarKey: JWT_SECRET }
+      - key: INTERNAL_TOKEN
+        fromService: { type: web, name: myt-user, envVarKey: INTERNAL_TOKEN }
+      - key: GATEWAY_PUBLIC_URL
+        fromService: { type: web, name: myt-gateway, envVarKey: RENDER_EXTERNAL_URL }
+
+  # ---------------------------------------------------------------------------
+  # Streaming Service (API) — phát HLS + ảnh public; segment tải thẳng từ R2 bằng URL có chữ ký
+  - type: web
+    name: myt-streaming
+    runtime: docker
+    plan: free
+    region: singapore
+    dockerfilePath: ./docker/service.Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    buildFilter:
+      paths: [services/streaming-service/**, packages/common/**, docker/**, package-lock.json]
+    envVars:
+      - fromGroup: myt-common
+      - key: SERVICE
+        value: streaming-service
+      - key: STREAMING_MODE
+        value: api
+      - key: FREE_MAX_HEIGHT
+        value: "480"                  # free/khách xem tối đa 480p, premium xem 720p (theo MAX_RENDITION_HEIGHT của worker)
+      - key: MONGO_URL
+        fromService: { type: web, name: myt-user, envVarKey: MONGO_URL }
+      - key: RABBITMQ_URL
+        fromService: { type: web, name: myt-user, envVarKey: RABBITMQ_URL }
+      - key: JWT_SECRET
+        fromService: { type: web, name: myt-user, envVarKey: JWT_SECRET }
+      - key: INTERNAL_TOKEN
+        fromService: { type: web, name: myt-user, envVarKey: INTERNAL_TOKEN }
+      - key: S3_ENDPOINT
+        fromService: { type: web, name: myt-video, envVarKey: S3_ENDPOINT }
+      - key: S3_BUCKET
+        fromService: { type: web, name: myt-video, envVarKey: S3_BUCKET }
+      - key: S3_ACCESS_KEY_ID
+        fromService: { type: web, name: myt-video, envVarKey: S3_ACCESS_KEY_ID }
+      - key: S3_SECRET_ACCESS_KEY
+        fromService: { type: web, name: myt-video, envVarKey: S3_SECRET_ACCESS_KEY }
+      - key: GATEWAY_PUBLIC_URL
+        fromService: { type: web, name: myt-gateway, envVarKey: RENDER_EXTERNAL_URL }
+
+  # ---------------------------------------------------------------------------
+  # Streaming Worker — chuyển mã ffmpeg (TRẢ PHÍ: gói nhỏ nhất 0.5 CPU / 512 MB)
+  # Gói nhỏ chỉ nên chuyển mã tới 720p. Nâng plan lên 1c-2g thì đặt MAX_RENDITION_HEIGHT=1080.
+  - type: worker
+    name: myt-worker
+    runtime: docker
+    plan: starter
+    region: singapore
+    dockerfilePath: ./docker/service.Dockerfile
+    dockerContext: .
+    buildFilter:
+      paths: [services/streaming-service/**, packages/common/**, docker/**, package-lock.json]
+    envVars:
+      - fromGroup: myt-common
+      - key: SERVICE
+        value: streaming-service
+      - key: APK_PACKAGES             # build arg: cài ffmpeg vào image
+        value: ffmpeg
+      - key: STREAMING_MODE
+        value: worker
+      - key: MAX_RENDITION_HEIGHT
+        value: "720"
+      - key: FFMPEG_PRESET
+        value: veryfast
+      - key: FFMPEG_THREADS
+        value: "2"
+      - key: MONGO_URL
+        fromService: { type: web, name: myt-user, envVarKey: MONGO_URL }
+      - key: RABBITMQ_URL
+        fromService: { type: web, name: myt-user, envVarKey: RABBITMQ_URL }
+      - key: JWT_SECRET
+        fromService: { type: web, name: myt-user, envVarKey: JWT_SECRET }
+      - key: S3_ENDPOINT
+        fromService: { type: web, name: myt-video, envVarKey: S3_ENDPOINT }
+      - key: S3_BUCKET
+        fromService: { type: web, name: myt-video, envVarKey: S3_BUCKET }
+      - key: S3_ACCESS_KEY_ID
+        fromService: { type: web, name: myt-video, envVarKey: S3_ACCESS_KEY_ID }
+      - key: S3_SECRET_ACCESS_KEY
+        fromService: { type: web, name: myt-video, envVarKey: S3_SECRET_ACCESS_KEY }
+
+  # ---------------------------------------------------------------------------
+  # Comment Service
+  - type: web
+    name: myt-comment
+    runtime: docker
+    plan: free
+    region: singapore
+    dockerfilePath: ./docker/service.Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    buildFilter:
+      paths: [services/comment-service/**, packages/common/**, docker/**, package-lock.json]
+    envVars:
+      - fromGroup: myt-common
+      - key: SERVICE
+        value: comment-service
+      - key: MONGO_URL
+        fromService: { type: web, name: myt-user, envVarKey: MONGO_URL }
+      - key: RABBITMQ_URL
+        fromService: { type: web, name: myt-user, envVarKey: RABBITMQ_URL }
+      - key: JWT_SECRET
+        fromService: { type: web, name: myt-user, envVarKey: JWT_SECRET }
+      - key: INTERNAL_TOKEN
+        fromService: { type: web, name: myt-user, envVarKey: INTERNAL_TOKEN }
+
+  # ---------------------------------------------------------------------------
+  # Payment Service
+  - type: web
+    name: myt-payment
+    runtime: docker
+    plan: free
+    region: singapore
+    dockerfilePath: ./docker/service.Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    buildFilter:
+      paths: [services/payment-service/**, packages/common/**, docker/**, package-lock.json]
+    envVars:
+      - fromGroup: myt-common
+      - key: SERVICE
+        value: payment-service
+      - key: PAYMENT_MOCK_ENABLED     # true = giữ cổng giả lập để demo; false khi dùng VNPay thật
+        value: "true"
+      - key: VNPAY_TMN_CODE           # tuỳ chọn (sandbox.vnpayment.vn)
+        sync: false
+      - key: VNPAY_HASH_SECRET
+        sync: false
+      - key: MONGO_URL
+        fromService: { type: web, name: myt-user, envVarKey: MONGO_URL }
+      - key: RABBITMQ_URL
+        fromService: { type: web, name: myt-user, envVarKey: RABBITMQ_URL }
+      - key: JWT_SECRET
+        fromService: { type: web, name: myt-user, envVarKey: JWT_SECRET }
+      - key: INTERNAL_TOKEN
+        fromService: { type: web, name: myt-user, envVarKey: INTERNAL_TOKEN }
+      - key: FRONTEND_URL
+        fromService: { type: web, name: myt-web, envVarKey: RENDER_EXTERNAL_URL }
+      - key: GATEWAY_PUBLIC_URL
+        fromService: { type: web, name: myt-gateway, envVarKey: RENDER_EXTERNAL_URL }
+
+  # ---------------------------------------------------------------------------
+  # Frontend — Static Site (free, có CDN)
+  - type: web
+    name: myt-web
+    runtime: static
+    buildCommand: npm ci --workspace=frontend --include-workspace-root=false && npm run build --workspace=frontend
+    staticPublishPath: ./frontend/dist
+    buildFilter:
+      paths: [frontend/**, package-lock.json]
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: VITE_GATEWAY_URL
+        fromService: { type: web, name: myt-gateway, envVarKey: RENDER_EXTERNAL_URL }
+    routes:
+      - type: rewrite               # SPA: mọi đường dẫn trả về index.html
+        source: /*
+        destination: /index.html
+    headers:
+      - path: /assets/*
+        name: Cache-Control
+        value: public, max-age=31536000, immutable

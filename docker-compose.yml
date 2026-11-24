@@ -1,0 +1,136 @@
+# Chạy toàn bộ hệ thống:            docker compose up --build
+# Chỉ chạy hạ tầng (dev bằng Node):  docker compose up -d mongo rabbitmq mailpit
+# Scale worker chuyển mã:           docker compose up -d --scale streaming-worker=3
+name: miniytb
+
+x-service-env: &service-env
+  NODE_ENV: production
+  JWT_SECRET: ${JWT_SECRET:-dev-only-secret-change-me-0123456789abcdef}
+  MONGO_URL: mongodb://mongo:27017
+  RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
+  STORAGE_DIR: /data/storage
+  FRONTEND_URL: ${FRONTEND_URL:-http://localhost:5173}
+
+x-service: &service
+  restart: unless-stopped
+  depends_on:
+    mongo: { condition: service_healthy }
+    rabbitmq: { condition: service_healthy }
+  volumes:
+    - ./storage:/data/storage
+
+services:
+  # ---------- Hạ tầng ----------
+  mongo:
+    image: mongo:8
+    ports: ["27017:27017"]
+    volumes: [mongo-data:/data/db]
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  rabbitmq:
+    image: rabbitmq:4-management
+    ports: ["5672:5672", "15672:15672"] # UI quản trị: http://localhost:15672 (guest/guest)
+    volumes: [rabbit-data:/var/lib/rabbitmq]
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+
+  mailpit:
+    image: axllent/mailpit
+    ports: ["1025:1025", "8025:8025"] # Hộp thư test: http://localhost:8025
+
+  # S3 giả lập để thử STORAGE_DRIVER=s3 trước khi dùng Cloudflare R2 thật
+  #   docker compose --profile s3 up -d s3   (endpoint http://localhost:8333)
+  s3:
+    image: chrislusf/seaweedfs
+    profiles: ["s3"]
+    command: server -s3 -dir=/data -ip.bind=0.0.0.0
+    ports: ["8333:8333"]
+    volumes: [s3-data:/data]
+
+  # ---------- Microservices ----------
+  gateway:
+    build: { context: ., dockerfile: docker/service.Dockerfile, args: { SERVICE: gateway } }
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      USER_SERVICE_URL: http://user-service:4001
+      VIDEO_SERVICE_URL: http://video-service:4002
+      STREAMING_SERVICE_URL: http://streaming-service:4003
+      COMMENT_SERVICE_URL: http://comment-service:4004
+      PAYMENT_SERVICE_URL: http://payment-service:4005
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173}
+    ports: ["8080:8080"]
+    depends_on: [user-service, video-service, streaming-service, comment-service, payment-service]
+
+  user-service:
+    <<: *service
+    build: { context: ., dockerfile: docker/service.Dockerfile, args: { SERVICE: user-service } }
+    environment:
+      <<: *service-env
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@local.test}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin12345}
+      ADMIN_NAME: ${ADMIN_NAME:-Quản trị viên}
+      SMTP_HOST: mailpit
+      SMTP_PORT: 1025
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      GOOGLE_CALLBACK_URL: ${GOOGLE_CALLBACK_URL:-http://localhost:5173/api/auth/google/callback}
+
+  video-service:
+    <<: *service
+    build: { context: ., dockerfile: docker/service.Dockerfile, args: { SERVICE: video-service } }
+    environment:
+      <<: *service-env
+      AUTO_APPROVE_VIDEOS: ${AUTO_APPROVE_VIDEOS:-false}
+
+  # API phát video + file public (thumbnail, avatar)
+  streaming-service:
+    <<: *service
+    build: { context: ., dockerfile: docker/service.Dockerfile, args: { SERVICE: streaming-service, APK_PACKAGES: ffmpeg } }
+    environment:
+      <<: *service-env
+      STREAMING_MODE: api
+
+  # Worker chuyển mã ffmpeg -> HLS, scale ngang được
+  streaming-worker:
+    <<: *service
+    build: { context: ., dockerfile: docker/service.Dockerfile, args: { SERVICE: streaming-service, APK_PACKAGES: ffmpeg } }
+    environment:
+      <<: *service-env
+      STREAMING_MODE: worker
+      FFMPEG_PRESET: ${FFMPEG_PRESET:-veryfast}
+
+  comment-service:
+    <<: *service
+    build: { context: ., dockerfile: docker/service.Dockerfile, args: { SERVICE: comment-service } }
+    environment:
+      <<: *service-env
+
+  payment-service:
+    <<: *service
+    build: { context: ., dockerfile: docker/service.Dockerfile, args: { SERVICE: payment-service } }
+    environment:
+      <<: *service-env
+      PAYMENT_MOCK_ENABLED: ${PAYMENT_MOCK_ENABLED:-true}
+      VNPAY_TMN_CODE: ${VNPAY_TMN_CODE:-}
+      VNPAY_HASH_SECRET: ${VNPAY_HASH_SECRET:-}
+      VNPAY_RETURN_URL: ${VNPAY_RETURN_URL:-http://localhost:5173/api/payments/vnpay/return}
+
+  # ---------- Frontend (nginx phục vụ bản build + proxy /api, /media về gateway) ----------
+  frontend:
+    build: { context: ., dockerfile: frontend/Dockerfile }
+    restart: unless-stopped
+    ports: ["5173:80"]
+    depends_on: [gateway]
+
+volumes:
+  mongo-data:
+  rabbit-data:
+  s3-data:

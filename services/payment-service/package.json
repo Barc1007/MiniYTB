@@ -1,0 +1,13 @@
+{
+  "name": "@myt/payment-service",
+  "version": "0.1.0",
+  "private": true,
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch-path=src --watch-path=../../packages/common/src src/index.js"
+  },
+  "dependencies": {
+    "@myt/common": "^0.1.0"
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "name": "@myt/frontend",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^6.3.0",
+    "autoprefixer": "^10.6.2",
+    "postcss": "^8.5.33",
+    "tailwindcss": "^3.4.19",
+    "vite": "^8.3.8"
+  },
+  "dependencies": {
+    "axios": "^1.21.1",
+    "clsx": "^2.1.1",
+    "hls.js": "^1.7.4",
+    "lucide-react": "^1.76.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "react-router-dom": "^7.18.6",
+    "sonner": "^2.0.8"
+  }
+}

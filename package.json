@@ -1,0 +1,26 @@
+{
+  "name": "miniytb",
+  "private": true,
+  "version": "0.1.0",
+  "description": "MiniYTB - nền tảng xem video trực tuyến theo kiến trúc microservices",
+  "workspaces": [
+    "packages/*",
+    "services/*",
+    "frontend"
+  ],
+  "scripts": {
+    "infra:up": "docker compose up -d mongo rabbitmq mailpit",
+    "infra:down": "docker compose down",
+    "dev": "concurrently -k -n gateway,user,video,stream,comment,payment,web -c gray,blue,green,magenta,cyan,yellow,white \"npm run dev -w services/gateway\" \"npm run dev -w services/user-service\" \"npm run dev -w services/video-service\" \"npm run dev -w services/streaming-service\" \"npm run dev -w services/comment-service\" \"npm run dev -w services/payment-service\" \"npm run dev -w frontend\"",
+    "dev:services": "concurrently -k -n gateway,user,video,stream,comment,payment -c gray,blue,green,magenta,cyan,yellow \"npm run dev -w services/gateway\" \"npm run dev -w services/user-service\" \"npm run dev -w services/video-service\" \"npm run dev -w services/streaming-service\" \"npm run dev -w services/comment-service\" \"npm run dev -w services/payment-service\"",
+    "test": "node --test \"packages/*/test/*.test.js\" \"services/*/test/*.test.js\"",
+    "smoke": "node scripts/smoke-test.mjs",
+    "seed": "node scripts/seed.mjs"
+  },
+  "engines": {
+    "node": ">=20.6"
+  },
+  "devDependencies": {
+    "concurrently": "^10.0.7"
+  }
+}
