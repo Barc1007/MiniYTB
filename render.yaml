@@ -1,10 +1,11 @@
 # =============================================================================
 # Render Blueprint — MiniYTB
-# Dashboard Render > New > Blueprint > chọn repo này. Xem hướng dẫn: DEPLOY-RENDER.md
+# Dashboard Render > New > Blueprint > chọn repo này.
 #
 #  - 6 web service (gateway + 5 microservice) gói FREE, Docker, region Singapore
-#  - 1 background worker chuyển mã ffmpeg (Render KHÔNG có gói free cho worker)
+#    myt-streaming vừa phát HLS vừa chuyển mã ffmpeg (STREAMING_MODE=all) để không cần worker trả phí
 #  - 1 static site cho frontend (free)
+#  => Toàn bộ chạy miễn phí.
 #  Dịch vụ ngoài: MongoDB Atlas, CloudAMQP (RabbitMQ), Cloudflare R2 (lưu video), Brevo (email)
 #
 #  Secret chỉ nhập MỘT lần (sync: false) ở 1 service "gốc"; service khác tham chiếu bằng
@@ -155,7 +156,8 @@ services:
         fromService: { type: web, name: myt-gateway, envVarKey: RENDER_EXTERNAL_URL }
 
   # ---------------------------------------------------------------------------
-  # Streaming Service (API) — phát HLS + ảnh public; segment tải thẳng từ R2 bằng URL có chữ ký
+  # Streaming Service — phát HLS + ảnh public (segment tải thẳng từ R2 bằng URL có chữ ký)
+  # VÀ chuyển mã ffmpeg ngay trong service free này (0.1 CPU: chậm, chỉ hợp video ngắn)
   - type: web
     name: myt-streaming
     runtime: docker
@@ -171,9 +173,17 @@ services:
       - key: SERVICE
         value: streaming-service
       - key: STREAMING_MODE
-        value: api
+        value: all                    # API + chuyển mã trong cùng service (không cần worker trả phí)
+      - key: APK_PACKAGES             # build arg: cài ffmpeg vào image
+        value: ffmpeg
+      - key: MAX_RENDITION_HEIGHT
+        value: "480"                  # máy free 0.1 CPU / 512 MB: chỉ tạo 360p + 480p
+      - key: FFMPEG_PRESET
+        value: ultrafast
+      - key: FFMPEG_THREADS
+        value: "1"
       - key: FREE_MAX_HEIGHT
-        value: "480"                  # free/khách xem tối đa 480p, premium xem 720p (theo MAX_RENDITION_HEIGHT của worker)
+        value: "360"                  # free/khách xem 360p, premium xem 480p
       - key: MONGO_URL
         fromService: { type: web, name: myt-user, envVarKey: MONGO_URL }
       - key: RABBITMQ_URL
@@ -192,47 +202,6 @@ services:
         fromService: { type: web, name: myt-video, envVarKey: S3_SECRET_ACCESS_KEY }
       - key: GATEWAY_PUBLIC_URL
         fromService: { type: web, name: myt-gateway, envVarKey: RENDER_EXTERNAL_URL }
-
-  # ---------------------------------------------------------------------------
-  # Streaming Worker — chuyển mã ffmpeg (TRẢ PHÍ: gói nhỏ nhất 0.5 CPU / 512 MB)
-  # Gói nhỏ chỉ nên chuyển mã tới 720p. Nâng plan lên 1c-2g thì đặt MAX_RENDITION_HEIGHT=1080.
-  - type: worker
-    name: myt-worker
-    runtime: docker
-    plan: starter
-    region: singapore
-    dockerfilePath: ./docker/service.Dockerfile
-    dockerContext: .
-    buildFilter:
-      paths: [services/streaming-service/**, packages/common/**, docker/**, package-lock.json]
-    envVars:
-      - fromGroup: myt-common
-      - key: SERVICE
-        value: streaming-service
-      - key: APK_PACKAGES             # build arg: cài ffmpeg vào image
-        value: ffmpeg
-      - key: STREAMING_MODE
-        value: worker
-      - key: MAX_RENDITION_HEIGHT
-        value: "720"
-      - key: FFMPEG_PRESET
-        value: veryfast
-      - key: FFMPEG_THREADS
-        value: "2"
-      - key: MONGO_URL
-        fromService: { type: web, name: myt-user, envVarKey: MONGO_URL }
-      - key: RABBITMQ_URL
-        fromService: { type: web, name: myt-user, envVarKey: RABBITMQ_URL }
-      - key: JWT_SECRET
-        fromService: { type: web, name: myt-user, envVarKey: JWT_SECRET }
-      - key: S3_ENDPOINT
-        fromService: { type: web, name: myt-video, envVarKey: S3_ENDPOINT }
-      - key: S3_BUCKET
-        fromService: { type: web, name: myt-video, envVarKey: S3_BUCKET }
-      - key: S3_ACCESS_KEY_ID
-        fromService: { type: web, name: myt-video, envVarKey: S3_ACCESS_KEY_ID }
-      - key: S3_SECRET_ACCESS_KEY
-        fromService: { type: web, name: myt-video, envVarKey: S3_SECRET_ACCESS_KEY }
 
   # ---------------------------------------------------------------------------
   # Comment Service

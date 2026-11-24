@@ -12,7 +12,7 @@ if (fs.existsSync(rootEnv)) {
 function required(name) {
   const value = process.env[name];
   if (!value) {
-    console.error(`❌ Thiếu biến môi trường bắt buộc: ${name} (xem .env.example)`);
+    console.error(`❌ Thiếu biến môi trường bắt buộc: ${name}`);
     process.exit(1);
   }
   return value;

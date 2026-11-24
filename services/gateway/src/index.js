@@ -95,6 +95,20 @@ app.get('/api/health', async (req, res) => {
   res.status(ok ? 200 : 503).json({ gateway: 'up', services: body });
 });
 
+// Đánh thức streaming-service (nơi chuyển mã) khi có upload hoặc Studio đang theo dõi tiến trình.
+// Service gói free ngủ khi không có request HTTP và khi ngủ thì không nhận việc từ RabbitMQ.
+// Tối đa 1 lần / WAKE_STREAMING_INTERVAL_MS (mặc định 5 phút, Render ngủ sau 15 phút). 0 = tắt.
+const WAKE_INTERVAL = env.int('WAKE_STREAMING_INTERVAL_MS', 5 * 60 * 1000);
+let lastWake = 0;
+app.use(['/api/videos'], (req, res, next) => {
+  const triggers = (req.method === 'POST' && (req.path === '/' || /\/retry$/.test(req.path))) || req.path === '/mine';
+  if (WAKE_INTERVAL > 0 && triggers && Date.now() - lastWake > WAKE_INTERVAL) {
+    lastWake = Date.now();
+    fetch(`${services.streaming}/health`, { signal: AbortSignal.timeout(90 * 1000) }).catch(() => {});
+  }
+  next();
+});
+
 // Header nội bộ gắn vào request GỐC trước khi proxy (không dùng sự kiện proxyReq: với request có
 // "Expect: 100-continue" — curl/app mobile upload file lớn — header đã gửi đi trước khi sự kiện chạy).
 app.use((req, res, next) => {
