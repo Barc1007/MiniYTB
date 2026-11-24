@@ -1,5 +1,8 @@
-// Gửi email qua SMTP (local dùng Mailpit: xem thư tại http://localhost:8025).
-// Nếu chưa cấu hình SMTP_HOST thì in nội dung ra console để dev vẫn lấy được link.
+// Gửi email theo thứ tự ưu tiên:
+//  1. Gmail API + OAuth2 (HTTPS cổng 443) khi có GMAIL_REFRESH_TOKEN: dùng khi deploy
+//     (Render gói free chặn cổng SMTP 25/465/587 nên không dùng được Gmail SMTP).
+//  2. SMTP khi có SMTP_HOST (local dùng Mailpit: xem thư tại http://localhost:8025).
+//  3. Không cấu hình gì: in nội dung ra console để dev vẫn lấy được link.
 const nodemailer = require('nodemailer');
 const { env } = require('@myt/common');
 
@@ -15,31 +18,66 @@ const transporter = host
 
 const FROM = env.optional('MAIL_FROM', 'MiniYTB <no-reply@local.test>');
 
-// Brevo HTTP API (cổng 443): dùng khi nền tảng chặn cổng SMTP (Render gói free chặn 25/465/587)
-const BREVO_API_KEY = env.optional('BREVO_API_KEY', '');
-
-function parseFrom(from) {
-  const m = from.match(/^\s*"?([^"<]*)"?\s*<([^>]+)>\s*$/);
-  return m ? { name: m[1].trim(), email: m[2].trim() } : { email: from.trim() };
+// Gmail API: OAuth client có thể dùng chung với client đăng nhập Google (GOOGLE_CLIENT_ID/SECRET)
+const GMAIL = {
+  clientId: env.optional('GMAIL_CLIENT_ID', '') || env.optional('GOOGLE_CLIENT_ID', ''),
+  clientSecret: env.optional('GMAIL_CLIENT_SECRET', '') || env.optional('GOOGLE_CLIENT_SECRET', ''),
+  refreshToken: env.optional('GMAIL_REFRESH_TOKEN', ''),
+};
+const gmailEnabled = Boolean(GMAIL.refreshToken && GMAIL.clientId && GMAIL.clientSecret);
+if (env.optional('GMAIL_REFRESH_TOKEN', '') && !gmailEnabled) {
+  console.warn('⚠️ Có GMAIL_REFRESH_TOKEN nhưng thiếu GMAIL_CLIENT_ID/SECRET (hoặc GOOGLE_CLIENT_ID/SECRET): không gửi được qua Gmail');
 }
 
-async function sendViaBrevo({ to, subject, html, text }) {
-  const res = await fetch('https://api.brevo.com/v3/smtp/email', {
+// Dựng email MIME chuẩn (UTF-8, multipart text + html) mà không gửi đi
+const composer = nodemailer.createTransport({ streamTransport: true, buffer: true, newline: 'unix' });
+
+let cachedToken = { value: '', expiresAt: 0 };
+async function gmailAccessToken() {
+  if (cachedToken.value && Date.now() < cachedToken.expiresAt - 60_000) return cachedToken.value;
+  const res = await fetch('https://oauth2.googleapis.com/token', {
     method: 'POST',
-    headers: { 'api-key': BREVO_API_KEY, 'content-type': 'application/json', accept: 'application/json' },
-    body: JSON.stringify({ sender: parseFrom(FROM), to: [{ email: to }], subject, htmlContent: html, textContent: text }),
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      client_id: GMAIL.clientId,
+      client_secret: GMAIL.clientSecret,
+      refresh_token: GMAIL.refreshToken,
+      grant_type: 'refresh_token',
+    }),
     signal: AbortSignal.timeout(15000),
   });
-  if (!res.ok) throw new Error(`Brevo API ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.access_token) {
+    throw new Error(`Google OAuth2 ${res.status}: ${data.error || ''} ${data.error_description || ''}`.trim());
+  }
+  cachedToken = { value: data.access_token, expiresAt: Date.now() + (data.expires_in || 3600) * 1000 };
+  return cachedToken.value;
+}
+
+async function sendViaGmail(mail) {
+  const { message } = await composer.sendMail(mail);
+  const send = async (token) => fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ raw: Buffer.from(message).toString('base64url') }),
+    signal: AbortSignal.timeout(15000),
+  });
+  let res = await send(await gmailAccessToken());
+  if (res.status === 401) { // token bị thu hồi sớm: lấy token mới và thử lại 1 lần
+    cachedToken = { value: '', expiresAt: 0 };
+    res = await send(await gmailAccessToken());
+  }
+  if (!res.ok) throw new Error(`Gmail API ${res.status}: ${(await res.text()).slice(0, 200)}`);
 }
 
 async function sendMail({ to, subject, html, text }) {
-  if (BREVO_API_KEY) return sendViaBrevo({ to, subject, html, text });
+  const mail = { from: FROM, to, subject, html, text };
+  if (gmailEnabled) return sendViaGmail(mail);
   if (!transporter) {
-    console.log(`📧 [Chưa cấu hình SMTP] Gửi tới ${to}: ${subject}\n${text || html}`);
+    console.log(`📧 [Chưa cấu hình email] Gửi tới ${to}: ${subject}\n${text || html}`);
     return;
   }
-  await transporter.sendMail({ from: FROM, to, subject, html, text });
+  await transporter.sendMail(mail);
 }
 
 function sendResetPasswordEmail(user, resetUrl) {

@@ -6,11 +6,11 @@
 #    myt-streaming vừa phát HLS vừa chuyển mã ffmpeg (STREAMING_MODE=all) để không cần worker trả phí
 #  - 1 static site cho frontend (free)
 #  => Toàn bộ chạy miễn phí.
-#  Dịch vụ ngoài: MongoDB Atlas, CloudAMQP (RabbitMQ), Cloudflare R2 (lưu video), Brevo (email)
+#  Dịch vụ ngoài: MongoDB Atlas, CloudAMQP (RabbitMQ), Cloudflare R2 (lưu video), Gmail API (email, OAuth2)
 #
 #  Secret chỉ nhập MỘT lần (sync: false) ở 1 service "gốc"; service khác tham chiếu bằng
 #  fromService.envVarKey (Render không cho đặt secret trong environment group).
-#    myt-user  : MONGO_URL, RABBITMQ_URL, JWT_SECRET, INTERNAL_TOKEN, ADMIN_*, email, Google
+#    myt-user  : MONGO_URL, RABBITMQ_URL, JWT_SECRET, INTERNAL_TOKEN, ADMIN_*, Gmail OAuth2, Google
 #    myt-video : S3_ENDPOINT, S3_BUCKET, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY
 #    myt-payment: VNPAY_*
 # =============================================================================
@@ -93,9 +93,13 @@ services:
         sync: false
       - key: ADMIN_NAME
         value: Quản trị viên
-      - key: BREVO_API_KEY            # để trống nếu chưa cần email (link reset sẽ in ra log)
+      - key: MAIL_FROM                # vd: MiniYTB <tai-khoan-gmail@gmail.com> (phải là chính Gmail đã cấp quyền)
         sync: false
-      - key: MAIL_FROM                # vd: MiniYTB <email-da-xac-minh-tren-brevo@gmail.com>
+      - key: GMAIL_REFRESH_TOKEN      # OAuth2 refresh token (scope gmail.send); để trống = link reset chỉ in ra log
+        sync: false
+      - key: GMAIL_CLIENT_ID          # để trống = dùng chung GOOGLE_CLIENT_ID
+        sync: false
+      - key: GMAIL_CLIENT_SECRET      # để trống = dùng chung GOOGLE_CLIENT_SECRET
         sync: false
       - key: GOOGLE_CLIENT_ID         # tuỳ chọn
         sync: false
